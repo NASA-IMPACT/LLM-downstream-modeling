@@ -107,6 +107,90 @@ class CachedLangchainSimpleQuestionGenerator(LangchainSimpleQuestionGenerator):
         return questions
 
 
+class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
+    """
+    gpt-3.5-based question generator
+    """
+
+    _PROMPT_SYSTEM_QUESTION_SINGLE = "You are an expert user answering questions. You will be passed a page extracted from a documentation and a question. Generate a concise and informative answer to the question based *solely* on the given text. Keep the answer short and concise. Respond 'impossible_question' if not sure about the answer."
+    _PROMPT_SYSTEM_QUESTION_MULTI = "You are an expert user answering questions. You will be passed a text document and a list of questions related to the given document. Generate a numbered list of answers to each question based *solely* on the given text document. Each answers should be short and concise. Respond 'impossible_question' if not sure about the answer."
+
+    def __init__(self, model: Optional = None) -> None:
+        self.model = model
+        self.cache = {}
+
+    def generate_answers_from_text(self, text: str, questions: List[str]) -> List[str]:
+        """
+        This takes a list of questions and directly generates a list of answers
+        in single API call.
+        """
+        text = text.strip()
+
+        # convert a list of string to  single string in numbered bullets.
+        question = "\n".join(
+            map(lambda x: f"{x[0]}. {x[1]}", enumerate(questions, start=1))
+        ).strip()
+
+        messages = self._create_answer_extraction_conversation_messages(
+            text=text,
+            question=question,
+            prompt=self._PROMPT_SYSTEM_QUESTION_MULTI,
+        )
+
+        # hash for tuple of (context, question) pair
+        hsh = str(hash((text, question)))
+
+        # if empty cache, run openai model
+        answers = self.cache.get(hsh, [])
+        answers = (
+            self.bullets_to_list(self._run_model(messages)) if not answers else answers
+        )
+
+        self.cache[hsh] = answers
+
+        return answers
+
+    def generate_answer_from_text(self, text: str, question: str) -> str:
+        """
+        Generate an answer for a given text and question.
+        """
+        text = text.strip()
+        messages = self._create_answer_extraction_conversation_messages(
+            text=text,
+            question=question,
+            prompt=self._PROMPT_SYSTEM_QUESTION_SINGLE,
+        )
+
+        # hash for tuple of (context, question) pair
+        hsh = str(hash((text, question)))
+
+        # if empty cache, run openai model
+        answers = self.cache.get(hsh, [])
+        answers = self._run_model(messages) if not answers else answers
+
+        self.cache[hsh] = answers
+
+        return answers
+
+    @staticmethod
+    def _create_answer_extraction_conversation_messages(
+        text: str,
+        question: str,
+        prompt: str,
+    ) -> Tuple[SystemMessage, HumanMessage]:
+        prompt = prompt.strip()
+        question = question.strip()
+        context_message = SystemMessage(content=prompt)
+
+        # Create a human message containing the input text
+        input_text_message = HumanMessage(content=text)
+
+        input_question_message = HumanMessage(content=question)
+
+        # Return the tuple of messages to be used in the extraction conversation
+        return (context_message, input_text_message, input_question_message)
+
+
 class QuestionAnswerGenerator:
     def __init__(
         self,
