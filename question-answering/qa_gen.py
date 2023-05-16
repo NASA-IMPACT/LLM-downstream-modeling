@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import pickle
 import re
+import tempfile
 import uuid
 
 from itertools import groupby
 from pathlib import Path
 from pprint import pprint
 from typing import List, Tuple, Optional, Union, Type
+from abc import ABC, abstractmethod
 
 from transformers import pipeline
 
@@ -76,6 +79,25 @@ class LangchainSimpleQuestionGenerator:
         # Return the tuple of messages to be used in the extraction conversation
         return (context_message, input_text_message)
 
+    @property
+    def __classname__(self) -> str:
+        return self.__class__.__name__
+
+    def save(self, path: Optional[str] = None):
+        path = (
+            tempfile.NamedTemporaryFile(prefix=self.__classname__, dir="tmp/").name
+            if not path
+            else path
+        )
+        logger.info(f"Saving instance of {self.__classname__} to {path}")
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path: str):
+        with open(path, "rb") as f:
+            return pickle.load(f)
+
 
 class CachedLangchainSimpleQuestionGenerator(LangchainSimpleQuestionGenerator):
     """
@@ -113,7 +135,8 @@ class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
     """
 
     _PROMPT_SYSTEM_QUESTION_SINGLE = "You are an expert user answering questions. You will be passed a page extracted from a documentation and a question. Generate a concise and informative answer to the question based *solely* on the given text. Keep the answer short and concise. Respond 'impossible_question' if not sure about the answer."
-    _PROMPT_SYSTEM_QUESTION_MULTI = "You are an expert user answering questions. You will be passed a text document and a list of questions related to the given document. Generate a numbered list of answers to each question based *solely* on the given text document. Each answers should be short and concise. Respond 'impossible_question' if not sure about the answer."
+    # _PROMPT_SYSTEM_QUESTION_MULTI = "You are an expert user answering questions. You will be passed a text document and a list of questions related to the given document. Generate a numbered list of answers to each question based *solely* on the given text document. Each answers should be short and concise. Respond 'impossible_question' if not sure about the answer."
+    _PROMPT_SYSTEM_QUESTION_MULTI = "You are an expert user answering questions. You will be passed a text document and a list of questions related to the given document. Generate a numbered list of answers to each question based *solely* on the given text document. Answer in an unbiased, comprehensive, and scholarly tone. Each answer should be very short, concise and informative. Respond 'impossible_question' if not sure about the answer. Responsd 'impossible_question'if the text context provides insufficient information."  # At the end of each answer, append a score on how confident you are on answering the question correctly in the given text context."
 
     def __init__(self, model: Optional = None) -> None:
         self.model = model
@@ -191,7 +214,36 @@ class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
         return (context_message, input_text_message, input_question_message)
 
 
-class QuestionAnswerGenerator:
+class QuestionAnswerGenerator(ABC):
+    @abstractmethod
+    def generate_qas_from_text(self, text: str, **kwargs) -> List[dict]:
+        raise NotImplementedError()
+
+
+class LangChainBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
+    def __init__(self, question_generator, answer_generator):
+        self.question_generator = question_generator
+        self.answer_generator = answer_generator
+
+    def generate_qas_from_text(self, text: str) -> List[dict]:
+        questions = self.question_generator.generate_questions_from_text(text)
+        answers = self.answer_generator.generate_answers_from_text(text, questions)
+        return list(
+            map(
+                lambda x: dict(
+                    context=text,
+                    start=-1,
+                    end=-1,
+                    score=None,
+                    question=x[0],
+                    answer=x[1],
+                ),
+                zip(questions, answers),
+            )
+        )
+
+
+class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
     def __init__(
         self,
         question_generator: Type[LangchainSimpleQuestionGenerator],
@@ -200,6 +252,7 @@ class QuestionAnswerGenerator:
         device: str = "cpu",
     ):
         self.question_generator = question_generator
+
         self.qa_pipe = pipeline(
             "question-answering",
             model=model,
@@ -208,22 +261,24 @@ class QuestionAnswerGenerator:
             device=device,
         )
 
-    def generate_questions_from_text(
+    def generate_qas_from_text(
         self,
         text: str,
         cutoff_threshold: float = 0.4,
         remove_empty_answers: bool = True,
     ) -> List[dict]:
         questions = self.question_generator.generate_questions_from_text(text)
-        data = self._reformat_question_context(text, questions)
-        return self._infer_answers_from_questions(
+
+        data = self.__reformat_question_context(text, questions)
+
+        return self.__infer_answers_from_questions(
             data,
             cutoff_threshold=cutoff_threshold,
             remove_empty_answers=remove_empty_answers,
         )
 
     @staticmethod
-    def convert_to_sq2(data):
+    def _convert_to_sq2(data):
         res = dict(version="v2.0", data=[])
         for context, vals in groupby(data, key=lambda x: x["context"]):
             idx = str(hash(context))
@@ -240,7 +295,7 @@ class QuestionAnswerGenerator:
             res["data"].append(tmpdata)
         return res
 
-    def _infer_answers_from_questions(
+    def __infer_answers_from_questions(
         self,
         data: List[dict],
         cutoff_threshold,
@@ -256,7 +311,7 @@ class QuestionAnswerGenerator:
         return list(map(lambda x: {**x[0], **x[1]}, res))
 
     @staticmethod
-    def _reformat_question_context(context: str, questions: List[str]) -> List[dict]:
+    def __reformat_question_context(context: str, questions: List[str]) -> List[dict]:
         return list(map(lambda x: dict(context=context, question=x), questions))
 
 
