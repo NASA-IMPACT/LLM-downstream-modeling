@@ -163,18 +163,15 @@ class AnswerType(Enum):
 
 @dataclass
 class AnswerDTO:
-    text: str
+    answer: str
     context: str
     question: str
     answer_type: AnswerType
-    raw_text: str = None
-    answer: str = None
+    raw_answer: str = None
 
     def __post_init__(self):
-        if self.raw_text is None:
-            self.raw_text = self.text
-        if self.answer is None:
-            self.answer = self.text
+        if self.raw_answer is None:
+            self.raw_answer = self.answer
 
 
 @dataclass
@@ -258,15 +255,15 @@ class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
             answer
             if isinstance(answer, AnswerDTO)
             else AnswerDTO(
-                text=answer,
+                answer=answer,
                 answer_type=AnswerType.NO_SPAN,
                 context=context,
                 question=question,
             )
         )
-        if LangchainSimpleQuestionGenerator.is_incomplete_text(answer_dto.text):
+        if LangchainSimpleQuestionGenerator.is_incomplete_text(answer_dto.answer):
             answer_dto.answer_type = AnswerType.INCOMPLETE
-        elif "impossible_question" in answer_dto.text.lower():
+        elif "impossible_question" in answer_dto.answer.lower():
             answer_dto.answer_type = AnswerType.IMPOSSIBLE
         return answer_dto
 
@@ -334,12 +331,14 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
         answers = self.answer_generator.generate_answers_from_text(text, questions)
 
         return list(
-            map(LangChainBasedQuestionAnswerGeneratorSpanable.compute_spans, answers),
+            map(self.compute_spans, answers),
         )
 
-    @staticmethod
-    def compute_spans(answer: AnswerDTO) -> type[AnswerDTO]:
-        match_ = re.search(answer.raw_text, answer.context, flags=re.IGNORECASE)
+    def matcher(self, context: str, answer: str):
+        return re.search(answer, context, flags=re.IGNORECASE)
+
+    def compute_spans(self, answer: AnswerDTO) -> type[AnswerDTO]:
+        match_ = self.matcher(answer.context, answer.raw_answer)
 
         # polymorphism-ish
         answer = SpanAnswerDTO(**answer.__dict__)
@@ -350,17 +349,44 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
             end = match_.end()
             text = match_.group()
 
-            # remove punctuation from the right side and update span
-            text = text.rstrip(string.punctuation)
-            end -= len(answer.raw_text) - len(text)
+            # remove punctuation from the right side and update the span
+            text = text.rstrip(string.punctuation + " ").rstrip()
+            end -= len(answer.raw_answer) - len(text)
 
-            answer.text = text
+            answer.answer = text
             answer.answer_type = AnswerType.SPAN
             answer.start = start
             answer.end = end
+            answer.score = 1.0
         else:
             answer.answer_type = AnswerType.NO_SPAN
         return answer
+
+
+class LangChainBasedQuestionAnswerGeneratorSpanableRecursiveMatch(
+    LangChainBasedQuestionAnswerGeneratorSpanable,
+):
+    """
+    This QA generator does simple substring matching to figure out start/end
+    values for the answer.
+
+    In cases where the LLM has appeneded preposition like "to", etc.
+        do some strategic search to get the spans.
+    """
+
+    def __init__(self, question_generator, answer_generator, min_tokens: int = 2):
+        super().__init__(question_generator, answer_generator)
+        self.min_tokens = min_tokens
+
+    def matcher(self, context: str, answer: str):
+        match_ = re.search(answer, context, flags=re.IGNORECASE)
+        if match_:
+            return match_
+        tokens = answer.split(" ")
+        while not match_ and len(tokens) >= self.min_tokens:
+            tokens = tokens[1:]
+            match_ = self.matcher(context, " ".join(tokens))
+        return match_
 
 
 class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
