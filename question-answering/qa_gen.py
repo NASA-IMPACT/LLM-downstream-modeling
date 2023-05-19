@@ -9,7 +9,7 @@ import string
 import tempfile
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from itertools import groupby
 from pathlib import Path
@@ -164,7 +164,21 @@ class AnswerType(Enum):
 @dataclass
 class AnswerDTO:
     text: str
+    context: str
+    question: str
     answer_type: AnswerType
+    raw_text: str = None
+
+    def __post_init__(self):
+        if self.raw_text is None:
+            self.raw_text = self.text
+
+
+@dataclass
+class SpanAnswerDTO(AnswerDTO):
+    start: int = -1
+    end: int = -1
+    answer_type: AnswerType = field(default_factory=lambda: AnswerType.SPAN)
 
 
 class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
@@ -218,22 +232,39 @@ class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
             self.bullets_to_list(self._run_model(messages)) if not answers else answers
         )
 
-        res = []
-        for answer in answers:
-            answer_dto = (
-                answer
-                if isinstance(answer, AnswerDTO)
-                else AnswerDTO(text=answer, answer_type=AnswerType.NO_SPAN)
-            )
-            if LangchainSimpleQuestionGenerator.is_incomplete_text(answer_dto.text):
-                answer_dto.answer_type = AnswerType.INCOMPLETE
-            elif "impossible_question" in answer_dto.text.lower():
-                answer_dto.answer_type = AnswerType.IMPOSSIBLE
-            res.append(answer_dto)
+        # convert strings to answer dto
+        res = list(
+            map(
+                lambda x: self._convert_to_dto(
+                    context=text,
+                    question=x[0],
+                    answer=x[1],
+                ),
+                zip(questions, answers),
+            ),
+        )
 
         self.cache[hsh] = res
 
         return res
+
+    def _convert_to_dto(self, context: str, question: str, answer: str) -> AnswerDTO:
+        # default to NO_SPAN type
+        answer_dto = (
+            answer
+            if isinstance(answer, AnswerDTO)
+            else AnswerDTO(
+                text=answer,
+                answer_type=AnswerType.NO_SPAN,
+                context=context,
+                question=question,
+            )
+        )
+        if LangchainSimpleQuestionGenerator.is_incomplete_text(answer_dto.text):
+            answer_dto.answer_type = AnswerType.INCOMPLETE
+        elif "impossible_question" in answer_dto.text.lower():
+            answer_dto.answer_type = AnswerType.IMPOSSIBLE
+        return answer_dto
 
     @staticmethod
     def _create_answer_extraction_conversation_messages(
@@ -265,7 +296,7 @@ class CachedLangchainAnswerGenerator(LangchainSimpleQuestionGenerator):
 
 class QuestionAnswerGenerator(ABC):
     @abstractmethod
-    def generate_qas_from_text(self, text: str, **kwargs) -> list[dict]:
+    def generate_qas_from_text(self, text: str, **kwargs) -> list[type[AnswerDTO]]:
         raise NotImplementedError()
 
 
@@ -274,27 +305,22 @@ class LangChainBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
         self.question_generator = question_generator
         self.answer_generator = answer_generator
 
-    def generate_qas_from_text(self, text: str) -> list[dict]:
+    def generate_qas_from_text(self, text: str) -> list[type[AnswerDTO]]:
         questions = self.question_generator.generate_questions_from_text(text)
         answers = self.answer_generator.generate_answers_from_text(text, questions)
-
-        return list(
-            map(
-                lambda x: dict(
-                    context=text,
-                    start=-1,
-                    end=-1,
-                    score=None,
-                    question=x[0],
-                    answer=x[1].text,
-                    answer_type=x[1].answer_type,
-                ),
-                zip(questions, answers),
-            ),
-        )
+        return answers
 
 
 class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
+    """
+    This QA generator does simple substring matching to figure out start/end
+    values for the answer.
+
+    TODO:
+        - In cases where the LLM has appeneded preposition like "to", etc.
+        do some strategic search to get the spans.
+    """
+
     def __init__(self, question_generator, answer_generator):
         self.question_generator = question_generator
         self.answer_generator = answer_generator
@@ -303,31 +329,34 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
         questions = self.question_generator.generate_questions_from_text(text)
         answers = self.answer_generator.generate_answers_from_text(text, questions)
 
-        spans = map(lambda x: self.get_answer_spans(text, x), answers)
         return list(
-            map(
-                lambda x: dict(
-                    context=text,
-                    question=x[0],
-                    start=x[1][0],
-                    end=x[1][1],
-                    score=1.0,
-                    answer=x[1][2].text,
-                    answer_type=x[1][2].answer_type,
-                ),
-                zip(questions, spans),
-            ),
+            map(LangChainBasedQuestionAnswerGeneratorSpanable.compute_spans, answers),
         )
 
     @staticmethod
-    def get_answer_spans(context, answer: AnswerDTO) -> tuple[int, int, str]:
-        match_ = re.search(answer.text, context, flags=re.IGNORECASE)
-        answer.answer_type = AnswerType.SPAN if match_ else answer.answer_type
-        return (
-            (match_.start(), match_.end(), answer)
-            if match_ is not None
-            else (-1, -1, answer)
-        )
+    def compute_spans(answer: AnswerDTO) -> type[AnswerDTO]:
+        match_ = re.search(answer.raw_text, answer.context, flags=re.IGNORECASE)
+
+        # polymorphism-ish
+        answer = SpanAnswerDTO(**answer.__dict__)
+
+        # if match, just update the fields
+        if match_:
+            start = match_.start()
+            end = match_.end()
+            text = match_.group()
+
+            # remove punctuation from the right side and update span
+            text = text.rstrip(string.punctuation)
+            end -= len(answer.raw_text) - len(text)
+
+            answer.text = text
+            answer.answer_type = AnswerType.SPAN
+            answer.start = start
+            answer.end = end
+        else:
+            answer.answer_type = AnswerType.NO_SPAN
+        return answer
 
 
 class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
