@@ -168,16 +168,20 @@ class AnswerDTO:
     question: str
     answer_type: AnswerType
     raw_text: str = None
+    answer: str = None
 
     def __post_init__(self):
         if self.raw_text is None:
             self.raw_text = self.text
+        if self.answer is None:
+            self.answer = self.text
 
 
 @dataclass
 class SpanAnswerDTO(AnswerDTO):
     start: int = -1
     end: int = -1
+    score: float | None = None
     answer_type: AnswerType = field(default_factory=lambda: AnswerType.SPAN)
 
 
@@ -382,16 +386,17 @@ class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
         text: str,
         cutoff_threshold: float = 0.4,
         remove_empty_answers: bool = True,
-    ) -> list[dict]:
+    ) -> list[SpanAnswerDTO]:
         questions = self.question_generator.generate_questions_from_text(text)
 
         data = self.__reformat_question_context(text, questions)
 
-        return self.__infer_answers_from_questions(
+        data = self.__infer_answers_from_questions(
             data,
             cutoff_threshold=cutoff_threshold,
             remove_empty_answers=remove_empty_answers,
         )
+        return data
 
     @staticmethod
     def _convert_to_sq2(data):
@@ -416,7 +421,7 @@ class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
         data: list[dict],
         cutoff_threshold,
         remove_empty_answers: bool,
-    ):
+    ) -> list[SpanAnswerDTO]:
         answers = self.qa_pipe(data)
         answers = map(lambda x: {**x, **dict(answer_type=AnswerType.SPAN)}, answers)
         res = filter(lambda x: x[1]["score"] >= cutoff_threshold, zip(data, answers))
@@ -425,7 +430,9 @@ class TransformerBasedQuestionAnswerGenerator(QuestionAnswerGenerator):
             if remove_empty_answers
             else res
         )
-        return list(map(lambda x: {**x[0], **x[1]}, res))
+        data = map(lambda x: {**x[0], **x[1]}, res)
+        data = map(lambda x: SpanAnswerDTO(**x, text=x["answer"]), data)
+        return list(data)
 
     @staticmethod
     def __reformat_question_context(context: str, questions: list[str]) -> list[dict]:
