@@ -351,10 +351,10 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
             text = match_.group()
 
             # remove punctuation from the right side and update the span
-            text = text.rstrip(string.punctuation + " ").rstrip()
-            end -= len(answer.raw_answer) - len(text)
+            text_s = text.rstrip(string.punctuation + " ").rstrip()
+            end -= len(text) - len(text_s)
 
-            answer.answer = text
+            answer.answer = text_s
             answer.answer_type = AnswerType.SPAN
             answer.start = start
             answer.end = end
