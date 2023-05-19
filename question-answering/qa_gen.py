@@ -316,10 +316,6 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
     """
     This QA generator does simple substring matching to figure out start/end
     values for the answer.
-
-    TODO:
-        - In cases where the LLM has appeneded preposition like "to", etc.
-        do some strategic search to get the spans.
     """
 
     def __init__(self, question_generator, answer_generator):
@@ -335,7 +331,12 @@ class LangChainBasedQuestionAnswerGeneratorSpanable(QuestionAnswerGenerator):
         )
 
     def matcher(self, context: str, answer: str):
-        return re.search(answer, context, flags=re.IGNORECASE)
+        answer = answer.strip().rstrip(string.punctuation)
+        try:
+            return re.search(rf"\b{answer}\b", context, flags=re.IGNORECASE)
+        except:
+            answer = re.escape(answer)
+            return re.search(rf"\b{answer}\b", context, flags=re.IGNORECASE)
 
     def compute_spans(self, answer: AnswerDTO) -> type[AnswerDTO]:
         match_ = self.matcher(answer.context, answer.raw_answer)
@@ -379,13 +380,13 @@ class LangChainBasedQuestionAnswerGeneratorSpanableRecursiveMatch(
         self.min_tokens = min_tokens
 
     def matcher(self, context: str, answer: str):
-        match_ = re.search(answer, context, flags=re.IGNORECASE)
+        match_ = super().matcher(context, answer)
         if match_:
             return match_
         tokens = answer.split(" ")
-        while not match_ and len(tokens) >= self.min_tokens:
+        while not match_ and len(tokens) >= self.min_tokens + 1:
             tokens = tokens[1:]
-            match_ = self.matcher(context, " ".join(tokens))
+            match_ = super().matcher(context, " ".join(tokens))
         return match_
 
 
