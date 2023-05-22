@@ -1,10 +1,10 @@
-langchain==0.0.157
-numpy==1.24.3
-pandas==2.0.1
-transformers==4.28.1
-datasets==2.3.2
 arrow==1.2.3
+datasets==2.3.2
+langchain==0.0.172
+loguru==0.7.0
+numpy==1.24.3
+openai==0.27.5
+pandas==2.0.1
 pyarrow==9.0.0
 torch==2.0.0
-openai==0.27.5
-loguru==0.7.0
+transformers==4.28.1

@@ -9,41 +9,97 @@ This project consists of code for generating question answer pairs from a given 
 
 ## Usage code example
 
-### Simple generation
+### Build Question generator
 
 ```python
 from qa_gen import (
     LangchainSimpleQuestionGenerator,
-    CachedLangchainSimpleQuestionGenerator,
-    QuestionAnswerGenerator
+    CachedLangchainSimpleQuestionGenerator
 )
 
-# question-only generator
-
 # question_generator = LangchainSimpleQuestionGenerator(ChatOpenAI(temperature=0.0), n_questions=10)
-question_generator = CachedLangchainSimpleQuestionGenerator(ChatOpenAI(temperature=0.0), n_questions=10) # avoids repetitive openai call for same document
 
+# question_generator = CachedLangchainSimpleQuestionGenerator.load("<path to pickled file>")
+
+question_generator = CachedLangchainSimpleQuestionGenerator(
+    ChatOpenAI(temperature=0.0),
+    n_questions=10,
+)
+
+# Or override default prompt
+question_generator = CachedLangchainSimpleQuestionGenerator(
+    ChatOpenAI(temperature=0.0),
+    n_questions=10,
+    prompt=<PROMPT_TEXT_TO_GENERATE_QUESTION_LIST>
+)
+
+document = <DOC_TEXT>
 questions = question_generator.generate_questions_from_text(document)
+```
 
-qa_generator = QuestionAnswerGenerator(
+### Build Answer generator
+
+```python
+from qa_gen import CachedLangchainAnswerGenerator
+
+
+# override default prompt to generate answers
+answer_generator = CachedLangchainAnswerGenerator(
+    ChatOpenAI(temperature=0.0),
+    prompt=<PROMPT_TEXT>,
+)
+
+answer_generator = CachedLangchainAnswerGenerator.load(<PICKLE_FILE>)
+
+# generate answers from text for list of questions
+answer_generator.generate_answers_from_text(
+    document,
+    questions,
+)
+```
+
+### Build QA generator
+
+```python
+from qa_gen import (
+    TransformerBasedQuestionAnswerGenerator,
+    LangChainBasedQuestionAnswerGenerator,
+    LangChainBasedQuestionAnswerGeneratorSpanable,
+    LangChainBasedQuestionAnswerGeneratorSpanableRecursiveMatch,
+)
+
+# transformer based
+qa_generator = TransformerBasedQuestionAnswerGenerator(
     question_generator=question_generator,
     model=model,
     tokenizer=tokenizer
 )
 
-qa_data = qa_generator.generate_questions_from_text(document, cutoff_threshold=0.1)
+# langchain (chatgpt based)
+qa_generator = LangChainBasedQuestionAnswerGenerator(
+    question_generator,
+    answer_generator
+)
 
+# langchain (chatgpt based) but custom span
+qa_generator = LangChainBasedQuestionAnswerGeneratorSpanable(
+    question_generator,
+    answer_generator
+)
+
+# Has custom span matching algorithm
+qa_generator = LangChainBasedQuestionAnswerGeneratorSpanableRecursiveMatch(
+    question_generator,
+    answer_generator
+)
+
+qa_data = qa_generator.generate_qas_from_text(document)
 ```
 
 
-### Bulk generation
+### Bulk generation for CMR
 
 ```python
-from qa_gen import (
-    LangchainSimpleQuestionGenerator,
-    CachedLangchainSimpleQuestionGenerator,
-    QuestionAnswerGenerator
-)
 from tqdm import tqdm
 
 
@@ -54,6 +110,16 @@ def cmr_document_iterator(path):
             if not text:
                 continue
             yield text
+
+def bulk_qa_generator_2(doc_iterator, qa_generator, n_docs=10, cutoff_threshold=0.1):
+    qas = []
+    counter = 0
+    for document in tqdm(doc_iterator, total=n_docs):
+        qas.extend(qa_generator.generate_qas_from_text(document))
+        counter += 1
+        if counter >= n_docs:
+            break
+    return qas
 
 def convert_to_sq2(data):
     res = dict(version="v2.0", data=[])
@@ -89,21 +155,10 @@ def bulk_qa_generator(doc_iterator, question_generator, qa_generator, n_docs=10,
 
 question_generator = CachedLangchainSimpleQuestionGenerator(ChatOpenAI(temperature=0.0), n_questions=10)
 
-qa_generator = QuestionAnswerGenerator(
-    question_generator=question_generator,
-    model=model,
-    tokenizer=tokenizer
-)
-
-cmr_qa_sq2 = bulk_qa_generator(
+qa_data = bulk_qa_generator(
     cmr_iterator,
     question_generator,
     qa_generator,
     n_docs=10
 )
-
-with open("data/cmr_qa_sqv2.json", "w") as f:
-    json.dump(cmr_qa_sq2, f)
-
-
 ```
